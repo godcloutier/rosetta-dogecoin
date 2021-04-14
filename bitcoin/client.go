@@ -368,6 +368,13 @@ func (b *Client) getBlock(
 	if err := b.post(ctx, requestMethodGetBlock, params, responseV1); err != nil {
 		return nil, fmt.Errorf("%w: error fetching block by hash %s", err, hash)
 	}
+
+	// we get the block version as int32
+	version := responseV1.Result.Version
+
+	// we check if it is an auxpow returns true if auxpow or false if not
+	auxpow := IsAuxPoWBlockVersion(version)
+
 	// Parameters:
 	//   1. Block hash (string, required)
 	//   2. Verbosity (bool, optional, default=false)
@@ -381,6 +388,15 @@ func (b *Client) getBlock(
 	if err != nil {
 		return nil, err
 	}
+
+	if auxpow {
+		/*
+			Our block is auxpow we process and return *Block, nil
+
+		*/
+		return nil, nil
+	}
+
 	// Deserialize the block
 	var msgBlock wire.MsgBlock
 	if err := msgBlock.Deserialize(bytes.NewReader(block)); err != nil {

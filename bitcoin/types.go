@@ -16,9 +16,13 @@ package bitcoin
 
 import (
 	"fmt"
+	"io"
 	"strings"
+	"time"
 
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/coinbase/rosetta-sdk-go/types"
 )
 
@@ -569,4 +573,210 @@ func CoinIdentifier(hash string, vout int64) string {
 func TransactionHash(identifier string) string {
 	vals := strings.Split(identifier, ":")
 	return vals[0]
+}
+
+// TxFlagMarker is the first byte of the FLAG field in a bitcoin tx
+// message. It allows decoders to distinguish a regular serialized
+// transaction from one that would require a different parsing logic.
+//
+// Position of FLAG in a bitcoin tx message:
+//   ┌─────────┬────────────────────┬─────────────┬─────┐
+//   │ VERSION │ FLAG               │ TX-IN-COUNT │ ... │
+//   │ 4 bytes │ 2 bytes (optional) │ varint      │     │
+//   └─────────┴────────────────────┴─────────────┴─────┘
+//
+// Zooming into the FLAG field:
+//   ┌── FLAG ─────────────┬────────┐
+//   │ TxFlagMarker (0x00) │ TxFlag │
+//   │ 1 byte              │ 1 byte │
+//   └─────────────────────┴────────┘
+const TxFlagMarker = 0x00
+
+// TxFlag is the second byte of the FLAG field in a bitcoin tx message.
+// It indicates the decoding logic to use in the transaction parser, if
+// TxFlagMarker is detected in the tx message.
+//
+// As of writing this, only the witness flag (0x01) is supported, but may be
+// extended in the future to accommodate auxiliary non-committed fields.
+type TxFlag = byte
+
+const WitnessFlag TxFlag = 0x01
+
+// TxWitness defines the witness for a TxIn. A witness is to be interpreted as
+// a slice of byte slices, or a stack with one or many elements.
+type TxWitness [][]byte
+
+const blockMinVersionAuxpow = 0x00620002
+const blockVersionFlagAuxpow = 0x00000100
+
+const versionAuxPow = 1 << 8
+
+func IsAuxPoWBlockVersion(version int32) bool {
+	return version >= blockMinVersionAuxpow && (version&blockVersionFlagAuxpow) > 0
+}
+
+func GetBaseVersion(version int32) int32 {
+	return version % versionAuxPow
+}
+
+type BlockHeaderVersion = int32
+
+// our block crash at 151280
+const AuxPowCheckpoint = 150000
+
+func GetAuxPowCheckpointHash(versionName string) int32 {
+
+	switch versionName {
+	case "TestNet3":
+		return chaincfg.TestNet3Params.BIP0034Height
+	case "MainNet":
+		return chaincfg.MainNetParams.BIP0034Height
+
+	default:
+		return 0
+	}
+
+}
+
+var serializedHeightVersion = int32(3)
+
+// ShouldHaveSerializedBlockHeight
+// Blocks with version 3 and above satisfy this criteria. See BIP0034
+// for further information.
+func ShouldHaveSerializedBlockHeight(header *wire.BlockHeader) bool {
+	return GetBaseVersion(header.Version) >= serializedHeightVersion
+}
+
+type AuxParser struct {
+	*wire.MsgBlock
+}
+
+type AuxBlockHeader struct {
+	// Coinbase transaction that is in the parent block, linking the AuxPOW block to its parent block
+	ParentCoinbase wire.MsgTx
+
+	// Hash of the parent_block header
+	ParentBlockHash chainhash.Hash
+
+	// The merkle branch linking the coinbase_txn to the parent block's merkle_root
+	CoinbaseBranch MerkleBranch
+
+	// The merkle branch linking this auxiliary blockchain to the others, when used in a
+	//merged mining setup with multiple auxiliary chains
+	BlockchainBranch MerkleBranch
+
+	// Parent block header
+	ParentBlock ParentBlock
+}
+
+type MerkleBranch struct {
+	// Individual hash in the branch; repeated branch_length number of times
+	LinkHashes []*chainhash.Hash
+
+	// Bitmask of which side of the merkle hash function the branch_hash element should go on. Zero means it
+	// goes on the right, One means on the left. It is equal to the index of the starting hash within
+	// the widest level of the merkle tree for this merkle branch.
+	BranchSidesBitmask int32
+}
+
+// Essentially a copy of BlockHeader but due to cyclic references we can't use that
+type ParentBlock struct {
+	// Version of the block.  This is not the same as the protocol version.
+	Version int32
+
+	// Hash of the previous block header in the block chain.
+	PrevBlock chainhash.Hash
+
+	// Merkle tree reference to hash of all transactions for the block.
+	MerkleRoot chainhash.Hash
+
+	// Time the block was created.  This is, unfortunately, encoded as a
+	// uint32 on the wire and therefore is limited to 2106.
+	Timestamp time.Time
+
+	// Difficulty target for the block.
+	Bits uint32
+
+	// Nonce used to generate the block.
+	Nonce uint32
+}
+
+type BlockHeaderV2 struct {
+	// Version of the block.  This is not the same as the protocol version.
+	Version int32
+	// Hash of the previous block header in the block chain.
+	PrevBlock chainhash.Hash
+	// Merkle tree reference to hash of all transactions for the block.
+	MerkleRoot chainhash.Hash
+	// Time the block was created.  This is, unfortunately, encoded as a
+	// uint32 on the wire and therefore is limited to 2106.
+	Timestamp time.Time
+	// Difficulty target for the block.
+	Bits uint32
+
+	// Nonce used to generate the block.
+	Nonce uint32
+
+	// If a block contains aux data, we store it here
+	AuxData AuxBlockHeader
+}
+
+func (pb *ParentBlock) ToBlockHeader() *BlockHeaderV2 {
+
+	abh := AuxBlockHeader{}
+
+	return &BlockHeaderV2{
+		Version:    pb.Version,
+		PrevBlock:  pb.PrevBlock,
+		MerkleRoot: pb.MerkleRoot,
+		Timestamp:  pb.Timestamp,
+		Bits:       pb.Bits,
+		Nonce:      pb.Nonce,
+		AuxData:    abh,
+	}
+}
+
+func (pb *ParentBlock) BtcDecode(r io.Reader) error {
+	return nil
+
+}
+
+// readBlockHeader reads a bitcoin block header from r.  See Deserialize for
+// decoding block headers stored to disk, such as in a database, as opposed to
+// decoding from the wire.
+func (b *Client) readAuxBlockHeader(r io.Reader, pver uint32, bh *AuxBlockHeader) error {
+	bh.ParentCoinbase.BtcDecode(r, pver, wire.BaseEncoding)
+
+	r.Read(bh.ParentBlock.PrevBlock.CloneBytes())
+
+	count, err := wire.ReadVarInt(r, pver)
+	if err != nil {
+		return err
+	}
+	coinbaseLinkHashes := make([]chainhash.Hash, count)
+	bh.CoinbaseBranch.LinkHashes = make([]*chainhash.Hash, 0, count)
+	for i := uint64(0); i < count; i++ {
+		hash := &coinbaseLinkHashes[i]
+
+		bh.CoinbaseBranch.LinkHashes = append(bh.CoinbaseBranch.LinkHashes, hash)
+	}
+
+	count, err = wire.ReadVarInt(r, pver)
+	if err != nil {
+		return err
+	}
+	blockchainLinkHashes := make([]chainhash.Hash, count)
+	bh.BlockchainBranch.LinkHashes = make([]*chainhash.Hash, 0, count)
+	for i := uint64(0); i < count; i++ {
+		hash := &blockchainLinkHashes[i]
+		r.Read(hash.CloneBytes())
+		if err != nil {
+			return err
+		}
+		bh.BlockchainBranch.LinkHashes = append(bh.BlockchainBranch.LinkHashes, hash)
+	}
+
+	bh.ParentBlock.BtcDecode(r)
+
+	return nil
 }
