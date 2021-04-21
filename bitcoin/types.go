@@ -1,4 +1,5 @@
 // Copyright 2020 Coinbase, Inc.
+// Copyright 2021 Rosetta Dogecoin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -198,7 +199,7 @@ type Block struct {
 	Txs []*Transaction `json:"tx"`
 }
 
-// Block is a raw Bitcoin block (with verbosity == 1).
+// BlockV1 is a raw Bitcoin block (with verbosity == 1).
 type BlockV1 struct {
 	Hash              string  `json:"hash"`
 	Height            int64   `json:"height"`

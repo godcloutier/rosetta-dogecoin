@@ -1,4 +1,5 @@
 // Copyright 2020 Coinbase, Inc.
+// Copyright 2021 Rosetta Dogecoin Developers
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -29,7 +30,6 @@ import (
 
 	bitcoinUtils "github.com/rosetta-dogecoin/rosetta-dogecoin/utils"
 
-	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/coinbase/rosetta-sdk-go/types"
 	"github.com/coinbase/rosetta-sdk-go/utils"
@@ -398,7 +398,7 @@ func (b *Client) getBlock(
 	}
 
 	// Deserialize the block
-	var msgBlock wire.MsgBlock
+	var msgBlock AuxBlock
 	if err := msgBlock.Deserialize(bytes.NewReader(block)); err != nil {
 		return nil, err
 	}
